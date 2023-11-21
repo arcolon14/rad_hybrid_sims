@@ -11,17 +11,17 @@ populations/species.'''
 def parse_args():
     p = argparse.ArgumentParser(prog=PROG, description=DESC)
     p.add_argument('-p', '--popmap', required=True,
-                   help='Path to population map file.  [str]')
+                   help='(str) Path to population map file.')
     p.add_argument('-v', '--vcf', required=True,
-                   help='Path to parental alleles in VCF format.  [str]')
+                   help='Path to parental alleles in VCF format.')
     p.add_argument('-o', '--outdir', required=False, default='.',
                    help='Output directory.  [str]')
     p.add_argument('-g', '--generations', required=False, default=10, type=int,
-                   help='Number of hybrid generations to simulate.  [int, default=10]')
+                   help='(int) Number of hybrid generations to simulate. [default=10]')
     p.add_argument('-n', '--n-individuals', required=False, default=10, type=int,
-                   help='Number of individuals simulated per population.  [int, default=10]')
+                   help='(int) Number of individuals simulated per population. [default=10]')
     p.add_argument('-m', '--min-maf', required=False, default=0.05, type=float,
-                   help='Minimum allele frequency to retain a parental allele  [float, default=0.05]')
+                   help='(float) Minimum allele frequency to retain a parental allele [default=0.05]')
     # Check input arguments
     args = p.parse_args()
     args.outdir = args.outdir.rstrip('/')
