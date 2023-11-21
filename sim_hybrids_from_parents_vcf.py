@@ -112,9 +112,6 @@ class SampleAncestry:
         self.gen  = generation
     def __str__(self):
         return f'{self.id} {self.pop} {self.par1} {self.par2} {self.gen}'
-#
-# Functions
-#
 
 def now():
     '''Print the current date and time.'''
@@ -232,10 +229,6 @@ def parse_vcf(vcf_f, parents, vcf_out, min_maf=0.05, log=sys.stdout):
                 if len(snp_allele_freq) == 2:
                     parental_allele_freqs[info.id] = snp_allele_freq
                     snp_info[id] = info
-                    
-                # For testing
-                # if n_snps > 20:
-                #     break
         # Report and Return
         print(f'    Loaded genotypes for {n_snps:,} variant sites in the input VCF.', file=log, flush=True)
         return parental_allele_freqs, snp_info
