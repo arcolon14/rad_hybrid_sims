@@ -20,6 +20,8 @@ def parse_args():
                    help='Number of hybrid generations to simulate.  [int, default=10]')
     p.add_argument('-n', '--n-individuals', required=False, default=10, type=int,
                    help='Number of individuals simulated per population.  [int, default=10]')
+    p.add_argument('-m', '--min-maf', required=False, default=0.05, type=float,
+                   help='Minimum allele frequency to retain a parental allele  [float, default=0.05]')
     # Check input arguments
     args = p.parse_args()
     args.outdir = args.outdir.rstrip('/')
@@ -33,6 +35,8 @@ def parse_args():
         sys.exit(f"Error: generations ({args.generations}) must be greater than 0.")
     if args.n_individuals <= 0:
         sys.exit(f"Error: number of individuals ({args.n_individuals}) must be greater than 0.")
+    if not 0.0 <= args.min_maf <= 0.5:
+        sys.exit(f"Error: Min minor allele frequency ({args.min_maf}) must be between 0.0 - 0.5.")
     return args
 
 #
@@ -128,7 +132,8 @@ Input parameters:
     VCF:           {args.vcf}
     Outdir:        {args.outdir}
     Generations:   {args.generations}
-    N individuals: {args.n_individuals}''',
+    N individuals: {args.n_individuals}
+    Min MAF:       {args.min_maf:0.06g}''',
     file=log, flush=True)
 
 def parse_popmap(popmap_f, log=sys.stdout):
@@ -154,7 +159,7 @@ def parse_popmap(popmap_f, log=sys.stdout):
         print(f'    {pop}: {n_sams[pop]:,} individuals', file=log)
     return parents
 
-def parse_vcf(vcf_f, parents, vcf_out, log=sys.stdout):
+def parse_vcf(vcf_f, parents, vcf_out, min_maf=0.05, log=sys.stdout):
     '''Parse the VCF to obtain the parental allele counts/freqs.'''
     print('\nParsing VCF...', file=log, flush=True)
     n_snps = 0
@@ -195,7 +200,6 @@ def parse_vcf(vcf_f, parents, vcf_out, log=sys.stdout):
                 ref = fields[3]
                 alt = fields[4]
                 info = SnpInfo(chrom, basepair, id, ref, alt)
-                snp_info[id] = info
                 # Process the genotype columns
                 snp_allele_cnt = dict()
                 for i, geno in enumerate(fields[9:]):
@@ -219,9 +223,16 @@ def parse_vcf(vcf_f, parents, vcf_out, log=sys.stdout):
                     pop_cnts = snp_allele_cnt[pop]
                     pop_total = sum(pop_cnts)
                     pop_freq = [ cnt/pop_total for cnt in pop_cnts ]
-                    snp_allele_freq[pop] = pop_freq
+                    # Filter if under a MAF cutoff
+                    minor_allele = min(pop_freq)
+                    if minor_allele >= min_maf:
+                        snp_allele_freq[pop] = pop_freq
                 # Add to the genome-wide dictionary
-                parental_allele_freqs[info.id] = snp_allele_freq
+                # Only when the two parents are seen
+                if len(snp_allele_freq) == 2:
+                    parental_allele_freqs[info.id] = snp_allele_freq
+                    snp_info[id] = info
+                    
                 # For testing
                 # if n_snps > 20:
                 #     break
@@ -451,7 +462,7 @@ def main():
     # Get parental IDs and populations
     parent_ids = parse_popmap(args.popmap, log_f)
     # Extract parental alleles from VCF
-    parental_allele_freqs, snp_info = parse_vcf(args.vcf, parent_ids, out_vcf, log_f)
+    parental_allele_freqs, snp_info = parse_vcf(args.vcf, parent_ids, out_vcf, args.min_maf, log_f)
     # Make a map of the simulated crosses and new individuals
     crosses_map, ancestry_map = map_simulated_crosses(args.generations, args.n_individuals, args.outdir, log_f)
     # Simulate the genotypes and save this to a the VCF
@@ -460,6 +471,7 @@ def main():
     # Close outputs
     log_f.write(f'\n{PROG} finished on {now()}\n')
     log_f.close()
+
 # Run Code
 if __name__ == '__main__':
     main()
