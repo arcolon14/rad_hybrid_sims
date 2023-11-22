@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import sys, os, argparse, gzip, random, datetime
+import sys, os, argparse, gzip, random, datetime, math
 
 # (c) 2023 Angel G. Rivera-Colon
 
@@ -159,7 +159,8 @@ def parse_popmap(popmap_f, log=sys.stdout):
 def parse_vcf(vcf_f, parents, vcf_out, min_maf=0.05, log=sys.stdout):
     '''Parse the VCF to obtain the parental allele counts/freqs.'''
     print('\nParsing VCF...', file=log, flush=True)
-    n_snps = 0
+    n_snps   = 0
+    vcf_rec  = 0
     parental_allele_freqs = dict()
     snp_info = dict()
     vcf_samples = None
@@ -187,7 +188,7 @@ def parse_vcf(vcf_f, parents, vcf_out, min_maf=0.05, log=sys.stdout):
                 continue
             else:
                 # Process all other rows which contain variant sites
-                n_snps += 1
+                vcf_rec += 1
                 # Extract the reference info for each variant site,
                 # which is used to reconstruct the final VCF
                 fields = line.strip('\n').split('\t')
@@ -229,8 +230,10 @@ def parse_vcf(vcf_f, parents, vcf_out, min_maf=0.05, log=sys.stdout):
                 if len(snp_allele_freq) == 2:
                     parental_allele_freqs[info.id] = snp_allele_freq
                     snp_info[id] = info
+                n_snps += 1
         # Report and Return
-        print(f'    Loaded genotypes for {n_snps:,} variant sites in the input VCF.', file=log, flush=True)
+        print(f'''    Read {vcf_rec:,} records from input VCF.
+    Retained {len(snp_info):,} variant sites after applying filters.''', file=log, flush=True)
         return parental_allele_freqs, snp_info
 
 def generate_crosses(generations, log=sys.stdout):
@@ -343,7 +346,7 @@ def map_simulated_crosses(generations, n_individuals, outdir='.', log=sys.stdout
     return crosses, ancestry_map
 
 def simulate_parental_site_genotypes(samples, popid, site_allele_freqs):
-    '''Simulate the parental genotypes at a given site. Each genotype is samples from
+    '''Simulate the parental genotypes at a given site. Each genotype is sampled from
     the empirical parental allele frequency.'''
     pop_genotypes = dict()
     for sam in samples:
@@ -354,9 +357,21 @@ def simulate_parental_site_genotypes(samples, popid, site_allele_freqs):
         pop_genotypes[sam.id] = genotype
     return pop_genotypes
 
+def sample_genotypes_from_allele_freqs(samples, popid, site_allele_freqs):
+    '''For a given population, sample genotypes for a number of individuals
+    according to the allele frequency observed in the population.'''
+    pop_genotypes = dict()
+    for sam in samples:
+        assert isinstance(sam, SampleAncestry)
+        pop_allele_freq = site_allele_freqs.get(popid, None)
+        assert pop_allele_freq is not None, 'Error: parental allele freqs not found'
+        genotype = random.choices([0,1], weights=pop_allele_freq, k=2)
+        pop_genotypes[sam.id] = genotype
+    return pop_genotypes
+
 def sample_hybrid_genotypes(samples, cross, site_genotypes):
-    '''Sample genotypes for a hybrid population based on an existing pool of parental
-    genotypes for a given site.'''
+    '''Sample genotypes for a hybrid population based on an existing pool 
+    of discrete (existing) parental genotypes for a given site.'''
     pop_genotypes = dict()
     for sam in samples:
         assert isinstance(sam, SampleAncestry)
@@ -369,6 +384,7 @@ def sample_hybrid_genotypes(samples, cross, site_genotypes):
                      random.sample(par2_genotypes,1)[0] ]
         pop_genotypes[sam.id] = genotype
     return pop_genotypes
+
 
 def format_vcf_row(site_info, site_genotypes, crosses, vcf):
     '''Aggregate the coordinate and allele information for each site, as well as the individual
@@ -393,7 +409,7 @@ def format_vcf_row(site_info, site_genotypes, crosses, vcf):
         for sample in indv_genotypes:
             # Increase sample tally
             info_ns += 1
-            genotype = indv_genotypes[sample]
+            genotype = sorted(indv_genotypes[sample])
             # Increase the allele tally
             for al in genotype:
                 tot_alls += 1
@@ -411,8 +427,8 @@ def format_vcf_row(site_info, site_genotypes, crosses, vcf):
     vcf.write(f'{row_str}\n')
 
 def simulate_genotypes(ancestry_map, crosses, parental_allele_freqs, var_site_info, vcf, log=sys.stdout):
-    '''Simulate the genotypes for all the possible crosses. Store the resulting
-    data in the output VCF.'''
+    '''Simulate the genotypes for all the possible crosses using discrete parental
+    genotyoes. Store the resulting data in the output VCF.'''
     print('\nSimulating genotypes...', file=log, flush=True)
     n_sites = 0
     # First, let's regenerate the VCF header
@@ -445,6 +461,88 @@ def simulate_genotypes(ancestry_map, crosses, parental_allele_freqs, var_site_in
           file=log, flush=True)
     vcf.close()
 
+
+def find_pop_allele_freq(cross, site_freqs):
+    '''Find the allele frequencies of a target population based on
+    the frequency of the parental population'''
+    assert isinstance(cross, Cross)
+    p1_freq = site_freqs[cross.par1] # Frequencies of parent1
+    p_p1 = p1_freq[0]                # P freq for parent1
+    p2_freq = site_freqs[cross.par2] # Frequencies of parent2
+    p_p2 = p2_freq[0]                # P freq for parent2
+    # Find the new frequency
+    p_f1, q_f1 = f1_freq(p_p1, p_p2)
+    return [p_f1, q_f1]
+
+
+def simulate_genotypes_from_prob(ancestry_map, crosses, parental_allele_freqs, var_site_info, vcf, log=sys.stdout):
+    '''Simulate the genotypes for all the possible crosses, using the probaility
+    (allele frequency) model. Store the resulting data in the output VCF.'''
+    print('\nSimulating genotypes...', file=log, flush=True)
+    n_sites = 0
+    # First, let's regenerate the VCF header
+    make_vcf_header(crosses, ancestry_map, vcf)
+    # We process one variant site at a time. They are independent from one another.
+    for site in var_site_info:
+        n_sites += 1
+        # Coordinate and allele info to re-generate the VCF
+        info = var_site_info[site]
+        # Initialize the genotype/allele freq dictionary for that given site
+        site_genotypes = dict()
+        site_freqs = dict()
+        # Now, work through the crosses. They must happen in order of the generations.
+        for cross in sorted(crosses, key=lambda c: c.gen):
+            # print(cross, site_freqs)
+            # Genotypes for that cross
+            site_genotypes.setdefault(cross.pop, dict())
+            pop_samples = ancestry_map[cross.pop]
+            if not cross.hybrid:
+                # Process the parents
+                # Get the parental allele freq at that site, based on the empirical parental allele frequency
+                site_freqs = parental_allele_freqs[info.id]
+                # Simulate genotypes from the allele freq
+                pop_genotypes = sample_genotypes_from_allele_freqs(pop_samples, cross.pop, site_freqs)
+                site_genotypes[cross.pop] = pop_genotypes
+            else:
+                # Process all the other crossses
+                # First, calculate an allele freq for the target population based on the allele freq at the previous generation
+                pop_allele_freq = find_pop_allele_freq(cross, site_freqs)
+                site_freqs[cross.pop] = pop_allele_freq
+                # Sample genotypes based on the calculatated allele frequencies
+                pop_genotypes = sample_genotypes_from_allele_freqs(pop_samples, cross.pop, site_freqs)
+                site_genotypes[cross.pop] = pop_genotypes
+        format_vcf_row(info, site_genotypes, crosses, vcf)
+    # Report and Return
+    print(f'    Simulated genotypes for {n_sites:,} variant sites.',
+          file=log, flush=True)
+    vcf.close()
+
+def f1_freq(p_p1, p_p2):
+    '''Calculate allele frequencies after a cross following expected Hardy Weinberg proportions'''
+    # Check inputs
+    assert type(p_p1) is float
+    assert 0<=p_p1<=1
+    assert type(p_p2) is float
+    assert 0<=p_p2<=1
+    # q = 1 - p
+    q_p1 = 1-p_p1
+    q_p2 = 1-p_p2
+    # p homozygoys genotype (pp) is p^2
+    p1p2 = p_p1*p_p2
+    # q homozygoys genotype (qq) is q^2
+    q1q2 = q_p1*q_p2
+    # pq heterozygoous genotype is 2pq
+    pq12 = (p_p1*q_p2)+(p_p2*q_p1)
+    # p^2 + 2pq + q^2 = 1
+    assert math.isclose((p1p2+q1q2+pq12),1)
+    # P(p) = p^2 + pq
+    p_f1 = p1p2+(pq12/2)
+    # P(q) = q^2 + pq
+    q_f1 = q1q2+(pq12/2)
+    # p + q = 1
+    assert math.isclose((p_f1+q_f1),1)
+    return p_f1, q_f1
+
 def main():
     args = parse_args()
     # Initialize log file
@@ -459,7 +557,14 @@ def main():
     # Make a map of the simulated crosses and new individuals
     crosses_map, ancestry_map = map_simulated_crosses(args.generations, args.n_individuals, args.outdir, log_f)
     # Simulate the genotypes and save this to a the VCF
-    simulate_genotypes(ancestry_map, crosses_map, parental_allele_freqs, snp_info, out_vcf, log_f)
+    prob = True
+    # TODO: For now we are hardcoding to always use allele freqs, but it could be an option in the future. Need to run more tests on this.
+    if prob:
+        # This function uses a new method that samples genotypes from the allele frequencies
+        simulate_genotypes_from_prob(ancestry_map, crosses_map, parental_allele_freqs, snp_info, out_vcf, log_f)
+    else:
+        # Previous method that sample genotypes from the already existing genotypes in the previous generation
+        simulate_genotypes(ancestry_map, crosses_map, parental_allele_freqs, snp_info, out_vcf, log_f) 
 
     # Close outputs
     log_f.write(f'\n{PROG} finished on {now()}\n')
