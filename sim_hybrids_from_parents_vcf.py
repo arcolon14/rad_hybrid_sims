@@ -220,7 +220,9 @@ def parse_vcf(vcf_f, parents, vcf_out, min_maf=0.05, log=sys.stdout):
                 for pop in snp_allele_cnt:
                     pop_cnts = snp_allele_cnt[pop]
                     pop_total = sum(pop_cnts)
-                    pop_freq = [ cnt/pop_total for cnt in pop_cnts ]
+                    pop_freq = [0.0, 0.0]
+                    if pop_total > 0:
+                        pop_freq = [ cnt/pop_total for cnt in pop_cnts ]
                     # Filter if under a MAF cutoff
                     minor_allele = min(pop_freq)
                     if minor_allele >= min_maf:
