@@ -347,8 +347,8 @@ def map_simulated_crosses(generations, n_individuals, outdir='.', log=sys.stdout
     return crosses, ancestry_map
 
 def simulate_parental_site_genotypes(samples, popid, site_allele_freqs):
-    '''Simulate the parental genotypes at a given site. Each genotype is sampled from
-    the empirical parental allele frequency.'''
+    '''Simulate the parental genotypes at a given site. Each genotype is
+    sampled from the empirical parental allele frequency.'''
     pop_genotypes = dict()
     for sam in samples:
         assert isinstance(sam, SampleAncestry)
@@ -358,17 +358,26 @@ def simulate_parental_site_genotypes(samples, popid, site_allele_freqs):
         pop_genotypes[sam.id] = genotype
     return pop_genotypes
 
-def sample_genotypes_from_allele_freqs(samples, popid, site_allele_freqs):
+def sample_genotypes_from_allele_freqs(samples, cross, site_allele_freqs):
     '''For a given population, sample genotypes for a number of individuals
     according to the allele frequency observed in the population.'''
+    assert isinstance(cross, Cross)
     pop_genotypes = dict()
     for sam in samples:
         assert isinstance(sam, SampleAncestry)
-        pop_allele_freq = site_allele_freqs.get(popid, None)
-        assert pop_allele_freq is not None, 'Error: parental allele freqs not found'
-        genotype = random.choices([0,1], weights=pop_allele_freq, k=2)
-        pop_genotypes[sam.id] = genotype
+        # Sample allele from first parent
+        al_p1 = sample_allele_from_freq(cross.par1, site_allele_freqs)
+        # Sample allele from other parent
+        al_p2 = sample_allele_from_freq(cross.par2, site_allele_freqs)
+        pop_genotypes[sam.id] = [al_p1, al_p2]
     return pop_genotypes
+
+def sample_allele_from_freq(popid, site_allele_freqs):
+    '''Sample an allele from a population, given their allele freqs'''
+    pop_allele_freq = site_allele_freqs.get(popid, None)
+    assert pop_allele_freq is not None, 'Error: parental allele freqs not found'
+    allele = random.choices([0,1], weights=pop_allele_freq, k=1)[0]
+    return allele
 
 def sample_hybrid_genotypes(samples, cross, site_genotypes):
     '''Sample genotypes for a hybrid population based on an existing pool 
@@ -385,7 +394,6 @@ def sample_hybrid_genotypes(samples, cross, site_genotypes):
                      random.sample(par2_genotypes,1)[0] ]
         pop_genotypes[sam.id] = genotype
     return pop_genotypes
-
 
 def format_vcf_row(site_info, site_genotypes, crosses, vcf):
     '''Aggregate the coordinate and allele information for each site, as well as the individual
@@ -502,15 +510,15 @@ def simulate_genotypes_from_prob(ancestry_map, crosses, parental_allele_freqs, v
                 # Get the parental allele freq at that site, based on the empirical parental allele frequency
                 site_freqs = parental_allele_freqs[info.id]
                 # Simulate genotypes from the allele freq
-                pop_genotypes = sample_genotypes_from_allele_freqs(pop_samples, cross.pop, site_freqs)
+                pop_genotypes = sample_genotypes_from_allele_freqs(pop_samples, cross, site_freqs)
                 site_genotypes[cross.pop] = pop_genotypes
             else:
                 # Process all the other crossses
                 # First, calculate an allele freq for the target population based on the allele freq at the previous generation
                 pop_allele_freq = find_pop_allele_freq(cross, site_freqs)
                 site_freqs[cross.pop] = pop_allele_freq
-                # Sample genotypes based on the calculatated allele frequencies
-                pop_genotypes = sample_genotypes_from_allele_freqs(pop_samples, cross.pop, site_freqs)
+                # Sample genotypes based on the calculatated allele frequencies of the previous generation
+                pop_genotypes = sample_genotypes_from_allele_freqs(pop_samples, cross, site_freqs)
                 site_genotypes[cross.pop] = pop_genotypes
         format_vcf_row(info, site_genotypes, crosses, vcf)
     # Report and Return
