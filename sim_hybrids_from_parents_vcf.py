@@ -54,13 +54,21 @@ class SnpInfo():
         return f'{self.chr} {self.bp} {self.id} {self.ref} {self.alt}'
 
 class Cross():
-    def __init__(self, generation, parent1, parent2):
+    def __init__(self, generation, parent1, parent2, par1_gen=0, par2_gen=0):
         assert type(generation) is int
         assert generation >= 0
+        assert type(par1_gen) is int
+        if generation > 0:
+            assert par1_gen == generation-1
+        assert type(par2_gen) is int
+        if generation > 0:
+            assert 0 <= par2_gen <= par1_gen
         parentals = {'P1','P2'}
         self.gen       = generation
         self.par1      = parent1
+        self.par1_g    = par1_gen # Generation of parent 1
         self.par2      = parent2
+        self.par2_g    = par2_gen # Generation of parent 2
         self.hybrid    = True # Hybrid or not
         self.pop       = f'F{self.gen}'
         self.backcross = False # Backcross or not
@@ -70,6 +78,8 @@ class Cross():
             self.hybrid = False
             self.pop  = self.par1
             assert self.gen == 0, 'Error: Parental crosses must be generation 0'
+            assert self.par1_g == 0, 'Error: Parental crosses must be generation 0'
+            assert self.par2_g == 0, 'Error: Parental crosses must be generation 0'
         # Only pure parental can be gen 0
         if self.gen == 0:
             assert self.hybrid is False, 'Error: Generation 0 must be pure parentals'
@@ -87,20 +97,27 @@ class Cross():
         else:
             # Late gen crosses cannot be between parentals
             if self.par1 in parentals and self.par2 in parentals:
-                    assert False, f'For generations >1 both parents cannot both be hybrids ({self.par1}, {self.par2})'
-            # Check for backcrosses
+                    assert False, f'For generations >1 both parents cannot both be parents ({self.par1}, {self.par2})'
+            # For crosses among groups
             if self.par1 != self.par2:
+                # Check for backcrosses to par1
                 if self.par1 in parentals:
                     self.bc_dir = self.par1
                     self.pop = f'F{self.gen}-{self.bc_dir}'
                     self.backcross = True
+                # Check for backcrosses to par2
                 elif self.par2 in parentals:
                     self.bc_dir = self.par2
                     self.pop = f'F{self.gen}-{self.bc_dir}'
                     self.backcross = True
-        # TODO: Checks for late-generation, non-backcross hybrids? We are not doing those now.
+                # Crosses among hybrid groups
+                else:
+                    self.pop = f'F{self.gen}-H{self.par1_g}.{self.par2_g}'
+            # For other Hybrid x Hybrid crosses
+            else:
+                self.pop = f'F{self.gen}-H{self.par1_g}.{self.par2_g}'
     def __str__(self):
-        return f'{self.pop} {self.par1}x{self.par2} {self.hybrid} {self.backcross} {self.bc_dir}'
+        return f'{self.pop} {self.par1}x{self.par2} {self.hybrid} {self.backcross} {self.bc_dir} {self.par1_g}x{self.par2_g}'
 
 class SampleAncestry:
     def __init__(self, sample_id, sample_pop, parent1, parent2, generation):
@@ -237,30 +254,79 @@ def parse_vcf(vcf_f, parents, vcf_out, min_maf=0.05, log=sys.stdout):
     Retained {len(snp_info):,} variant sites after applying filters.''', file=log, flush=True)
         return parental_allele_freqs, snp_info
 
-def generate_crosses(generations, log=sys.stdout):
+def generate_crosses(generations, log=sys.stdout, ngen_hyb_hyb=4):
     '''Generate and check the crosses of interest. Return a list of crosses.'''
     assert generations > 0
+    assert ngen_hyb_hyb <= generations
     crosses = list()
+    # Make a list of possible hybrid parents for hybrid x hybrid crosses
+    hybrid_parents = list()
     for g in range(0, generations+1):
         # Parental crosses
         if g == 0:
-            for p in ['P1', 'P2']:
-                cross = Cross(g, p, p)
+            for par in ['P1', 'P2']:
+                cross = Cross(g, par, par, g, g)
                 crosses.append(cross)
+        # F1s
         elif g == 1:
-            cross = Cross(g, 'P1', 'P2')
+            cross = Cross(g, 'P1', 'P2', 0, 0)
             crosses.append(cross)
+            hybrid_parents.append(f'F{g-1}')
+        # F2s
+        elif g == 2:
+            par1 = 'F1' # Parent 1 must always be an F1
+            # F1 x P1 cross:
+            cross = Cross(g, par1, 'P1', g-1, 0)
+            crosses.append(cross)
+            # F1 x P2 cross:
+            cross = Cross(g, par1, 'P2', g-1, 0)
+            crosses.append(cross)
+            # F1 x F1 cross
+            cross = Cross(g, par1, 'F1', g-1, g-1)
+            crosses.append(cross)
+        # Other hybrids, Fg
         else:
-            # Make the backcrosses
-            # We are avoiding late-generations hybridxhybrid crosses (too many!)
-            for p in ['P1', 'P2']:
-                pop_id = f'F{g-1}-{p}'
-                if g-1 == 1:
-                    # Adjust for F2s. Their F1 parents don't have
-                    # backcross direction.
-                    pop_id = f'F{g-1}'
-                cross = Cross(g, pop_id, p)
-                crosses.append(cross)
+            # For a hybrid of generation g, one parent
+            # MUST be from the previous generation.
+            par1 = f'F{g-1}'
+            # The other parent can be from any prior generation.
+            # We call this k, ranging from 0 to g-1.
+            for j in range(g):
+                # Backcrosses (Fg x Parent)
+                if j == 0:
+                    for par in ['P1', 'P2']:
+                        # These are "perfect" backcrosses,
+                        # always against the same parent
+                        par1 = f'F{g-1}-{par}'
+                        cross = Cross(g, par1, par, g-1, j)
+                        crosses.append(cross)
+                # Crosses against the same generation hybrid
+                # Fg x Fg
+                elif j == (g-1):
+                    par = f'F{g-1}-H{g-2}.{g-2}'
+                    cross = Cross(g, par, par, g-1, g-1)
+                    crosses.append(cross)
+                # For all other crosses:
+                else:
+                    # Only process secondary hybrid x hybrid
+                    # crosses for a certain number of generations
+                    # else it creates excessive combinations.
+                    if g > ngen_hyb_hyb:
+                        continue
+                    # Make crosses against F1s
+                    # Fg x F1
+                    if j == 1:
+                        par1 = f'F{g-1}-H{g-2}.{g-2}'
+                        par2 = 'F1'
+                        cross = Cross(g, par1, par2, g-1, j)
+                        crosses.append(cross)
+                    # Process the other secondary hybrid crosses
+                    # Fg x Fj
+                    else:
+                        par1 = f'F{g-1}-H{g-2}.{g-2}'
+                        par1 = f'F{j}-H{j-1}.{j-1}'
+                        cross = Cross(g, par1, par2, g-1, j)
+                        crosses.append(cross)
     return crosses
 
 def determine_parents(crosses, population_map):
@@ -285,6 +351,7 @@ def determine_parents(crosses, population_map):
                 ancestry_map[cross.pop].append(ancestry)
             else:
                 if cross.par1 != cross.par2:
+                    # print(cross.par1, cross.par2)
                     # For all other pops, you sample for each population separately
                     parent1 = random.sample(population_map[cross.par1],1)[0]
                     parent2 = random.sample(population_map[cross.par2],1)[0]
@@ -310,7 +377,7 @@ def make_vcf_header(crosses, ancestry_map, vcf):
     header_str = '\t'.join(header)
     vcf.write(f'{header_str}\n')
 
-def map_simulated_crosses(generations, n_individuals, outdir='.', log=sys.stdout):
+def map_simulated_crosses(generations, n_individuals, outdir='.', log=sys.stdout, ngen_hyb_hyb=3):
     '''Make a map of the new hybrid populations alongside the IDs for simulated
     individuals. Write to disk as a popmap.tsv file. Return a list with the
     crosses and map of the ancestry of each individual (id of each parent).'''
