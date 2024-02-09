@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import sys, os, argparse, gzip, random, datetime, math
 
-# (c) 2023 Angel G. Rivera-Colon
+# (c) 2024 Angel G. Rivera-Colon
 
 PROG = sys.argv[0].split('/')[-1]
 DESC = '''Simulate sequential hybrid populations (e.g., F1s, F2
@@ -22,6 +22,8 @@ def parse_args():
                    help='(int) Number of individuals simulated per population. [default=10]')
     p.add_argument('-m', '--min-maf', required=False, default=0.05, type=float,
                    help='(float) Minimum allele frequency to retain a parental allele [default=0.05]')
+    p.add_argument('--fixed-gt-pool', required=False, action='store_false', default=True,
+                   help='Simulate from a fixed pool of genotypes (instead of simulating from the allele frequencies)')
     # Check input arguments
     args = p.parse_args()
     args.outdir = args.outdir.rstrip('/')
@@ -254,7 +256,7 @@ def parse_vcf(vcf_f, parents, vcf_out, min_maf=0.05, log=sys.stdout):
     Retained {len(snp_info):,} variant sites after applying filters.''', file=log, flush=True)
         return parental_allele_freqs, snp_info
 
-def generate_crosses(generations, log=sys.stdout, ngen_hyb_hyb=4):
+def generate_crosses(generations, log=sys.stdout, ngen_hyb_hyb=3):
     '''Generate and check the crosses of interest. Return a list of crosses.'''
     assert generations > 0
     assert ngen_hyb_hyb <= generations
@@ -381,11 +383,12 @@ def map_simulated_crosses(generations, n_individuals, outdir='.', log=sys.stdout
     '''Make a map of the new hybrid populations alongside the IDs for simulated
     individuals. Write to disk as a popmap.tsv file. Return a list with the
     crosses and map of the ancestry of each individual (id of each parent).'''
-    print('\nCreating a population map for simulated individuals...', file=log, flush=True)
+    print('\nCreating an assignment map for simulated individuals...', file=log, flush=True)
     fh = open(f'{outdir}/simulated_hybrids.popmap.tsv', 'w')
+    fh.write('#SampleID\tPopID\tGeneration\tCrossType\n')
     population_map = dict()
     # Calculate the possible crosses
-    crosses = generate_crosses(generations, log)
+    crosses = generate_crosses(generations, log, ngen_hyb_hyb)
     tot_pops = len(crosses)
     tot_sams = tot_pops * n_individuals
     print(f'    Simulating crosses for {tot_pops:,} populations.\n    A total of {tot_sams:,} individuals.', file=log, flush=True)
@@ -396,6 +399,15 @@ def map_simulated_crosses(generations, n_individuals, outdir='.', log=sys.stdout
         # First, define the population ID:
         pop_id = cross.pop
         population_map.setdefault(pop_id, [])
+        # Make an ID for the cross type
+        cross_type = None
+        if not cross.hybrid:
+            cross_type = 'parental'
+        else:
+            if cross.backcross:
+                cross_type = f'{cross.bc_dir}_backcross'
+            else:
+                cross_type = 'hybrid'
         # Loop over the sampled individuals per pop
         for n in range(n_individuals):
             # The number of the individual in the population
@@ -406,7 +418,7 @@ def map_simulated_crosses(generations, n_individuals, outdir='.', log=sys.stdout
             # The sample ID combining population ID and sample number
             sample_id = f'{pop_id}_{pop_sam_i}_{tot_sam_i}'
             # Write to popmap
-            fh.write(f'{sample_id}\t{pop_id}\n')
+            fh.write(f'{sample_id}\t{pop_id}\t{cross.gen}\t{cross_type}\n')
             population_map[pop_id].append(sample_id)
     fh.close()
     # Now, map the specific ancestry of each individual
@@ -425,7 +437,7 @@ def simulate_parental_site_genotypes(samples, popid, site_allele_freqs):
         pop_genotypes[sam.id] = genotype
     return pop_genotypes
 
-def sample_genotypes_from_allele_freqs(samples, cross, site_allele_freqs):
+def sample_genotypes_from_allele_freqs_bak(samples, cross, site_allele_freqs):
     '''For a given population, sample genotypes for a number of individuals
     according to the allele frequency observed in the population.'''
     assert isinstance(cross, Cross)
@@ -438,6 +450,110 @@ def sample_genotypes_from_allele_freqs(samples, cross, site_allele_freqs):
         al_p2 = sample_allele_from_freq(cross.par2, site_allele_freqs)
         pop_genotypes[sam.id] = [al_p1, al_p2]
     return pop_genotypes
+
+def sample_genotypes_from_allele_freqs(samples, cross, site_allele_freqs):
+    '''For a given population, sample genotypes for a number of individuals
+    according to the allele frequency observed in the population.'''
+    assert isinstance(cross, Cross)
+    pop_genotypes = dict()
+    # Process the genotypes of the parentals  and F1s separately
+    if cross.gen < 1:
+        for sam in samples:
+            assert isinstance(sam, SampleAncestry)
+            # Sample allele from first parent
+            al_p1 = sample_allele_from_freq(cross.par1, site_allele_freqs)
+            # Sample allele from other parent
+            al_p2 = sample_allele_from_freq(cross.par2, site_allele_freqs)
+            pop_genotypes[sam.id] = [al_p1, al_p2]
+    # Process all crosses containing the hybrids
+    else:
+        # Determine the genomic proportion based on the cross
+        # See Fitzpatrick 2012 BMC Evol Biol (https://doi.org/10.1186/1471-2148-12-131)
+        genomic_props = get_genomic_proportions(cross.gen)
+        # Determine the genotype frequencies from the alleles freqs and genomic proportions
+        gt_freqs = calculate_hybrid_gt_freqs(cross, site_allele_freqs, genomic_props)
+        # Loop over the samples and get a gt
+        for sam in samples:
+            assert isinstance(sam, SampleAncestry)
+            gt = sample_gt(gt_freqs)
+            pop_genotypes[sam.id] = gt
+    return pop_genotypes
+
+def sample_gt(gt_freqs):
+    '''Sample the genotype of an individual given the genotype frequency'''
+    genotypes = [[0,0], [0,1], [1,1]]
+    assert len(gt_freqs) == len(genotypes)
+    # Sample a genotype given a frequency
+    gt = random.choices(genotypes, weights=gt_freqs, k=1)[0]
+    return gt
+
+def calculate_hybrid_gt_freqs(cross, site_allele_freqs, genomic_props):
+    '''Calculate the genotype frequency in a hybrid propulation from the
+    observed allele frequency and genomic proportions. See Fitzpatrick 2012
+    BMC Evol Biol (https://doi.org/10.1186/1471-2148-12-131).'''
+    assert isinstance(cross, Cross)
+    assert len(genomic_props) == 3
+    # Genomic proportions
+    p11 = genomic_props[0]
+    p12 = genomic_props[1]
+    p22 = genomic_props[2]
+    # Allele freqs for P1
+    # p1_allele_freqs = site_allele_freqs.get(cross.par1, None)
+    p1_allele_freqs = site_allele_freqs.get('P1', None)
+    assert p1_allele_freqs is not None, 'Error: parental allele freqs not found'
+    p_p1 = p1_allele_freqs[0] # f_ij1
+    q_p1 = p1_allele_freqs[1] # f_ik1
+    # Allele freqs for P2
+    # p2_allele_freqs = site_allele_freqs.get(cross.par2, None)
+    p2_allele_freqs = site_allele_freqs.get('P2', None)
+    assert p2_allele_freqs is not None, 'Error: parental allele freqs not found'
+    p_p2 = p2_allele_freqs[0] # f_ij2
+    q_p2 = p2_allele_freqs[1] # f_ik2
+
+    # Calculate the homozygous (0/0) genotype frequency
+    # Formula 1 from Fitzpatrick 2012:
+    # Pr(j,j)_i = p11*f_ij1^2 + p12*f_ij1*f_ij2 + p22*f_ij2^2
+    pr_pp = (p11*(p_p1**2)) + (p12*p_p1*p_p2) + (p22*(p_p2**2))
+
+    # Calculate the heterozygous (0/1) genotype frequency
+    # Formula 2 from Fitzpatrick 2012:
+    # Pr(j,k)_i = p11^2*f_ij1*f_ik1 + p12(f_ij1*f_ik2 + f_ik1*f_ij2) + p22^2*f_ij2*f_ik2
+    pr_pq = ((p11**2)*p_p1*q_p1) + (p12*((p_p1*q_p2)+(q_p1*p_p2))) + ((p22**2)*p_p2*q_p2)
+
+    # Calculate the homozoygoys (1/1) genotype frequency
+    # pr_qq = 1 - (pr_pp + pr_pq)
+    pr_qq = (p11*(q_p1**2)) + (p12*q_p1*q_p2) + (p22*(q_p2**2))
+
+    # Check the outputs
+    gt_freqs = [pr_pp, pr_pq, pr_qq]
+    assert math.isclose(sum(gt_freqs), 1)
+    # print(cross.gen, cross.pop, genomic_props, gt_freqs, p1_allele_freqs, p2_allele_freqs)
+    return gt_freqs
+
+def get_genomic_proportions(generation):
+    '''Get an expected genomic proportion based on the cross type.
+    These are the genomic proportions defined by Turelli & Orr 2000
+    and further detailed in Fitzpatrick 2012.'''
+    assert type(generation) is int
+    assert generation > 0
+    # Get the expected proportion of homozygotes
+    prop_hom_e = prop_homozygotes(generation)
+    # Break down into the three possible proportions
+    p11 = prop_hom_e/2 # Proportion with both alleles from P1
+    p12 = 1-prop_hom_e # Proportion with one allele from P1 and P2 each
+    p22 = prop_hom_e/2 # Proportion with both alleles from P2
+    exp_gp = [p11, p12, p22]
+    assert math.isclose(sum(exp_gp),1)
+    return exp_gp
+
+def prop_homozygotes(generation, n_loci=1):
+    '''Determine the expected proportion of intra-class homozygotes in hybrid crosses'''
+    assert type(generation) is int
+    assert generation > 0
+    m = generation-1
+    n = n_loci # should always be 1 in our case since we model one SNP at a time
+    prop_hom = (((2**m)-1)/(2**m))**n
+    return prop_hom
 
 def sample_allele_from_freq(popid, site_allele_freqs):
     '''Sample an allele from a population, given their allele freqs'''
@@ -505,7 +621,7 @@ def format_vcf_row(site_info, site_genotypes, crosses, vcf):
 def simulate_genotypes(ancestry_map, crosses, parental_allele_freqs, var_site_info, vcf, log=sys.stdout):
     '''Simulate the genotypes for all the possible crosses using discrete parental
     genotyoes. Store the resulting data in the output VCF.'''
-    print('\nSimulating genotypes...', file=log, flush=True)
+    print('\nSimulating genotypes from a pool of fixed genotypes...', file=log, flush=True)
     n_sites = 0
     # First, let's regenerate the VCF header
     make_vcf_header(crosses, ancestry_map, vcf)
@@ -633,9 +749,7 @@ def main():
     # Make a map of the simulated crosses and new individuals
     crosses_map, ancestry_map = map_simulated_crosses(args.generations, args.n_individuals, args.outdir, log_f)
     # Simulate the genotypes and save this to a the VCF
-    prob = True
-    # TODO: For now we are hardcoding to always use allele freqs, but it could be an option in the future. Need to run more tests on this.
-    if prob:
+    if args.fixed_gt_pool:
         # This function uses a new method that samples genotypes from the allele frequencies
         simulate_genotypes_from_prob(ancestry_map, crosses_map, parental_allele_freqs, snp_info, out_vcf, log_f)
     else:
