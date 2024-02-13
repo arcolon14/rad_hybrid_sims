@@ -256,7 +256,7 @@ def parse_vcf(vcf_f, parents, vcf_out, min_maf=0.05, log=sys.stdout):
     Retained {len(snp_info):,} variant sites after applying filters.''', file=log, flush=True)
         return parental_allele_freqs, snp_info
 
-def generate_crosses(generations, log=sys.stdout, ngen_hyb_hyb=3):
+def generate_crosses(generations, log=sys.stdout, ngen_hyb_hyb=0):
     '''Generate and check the crosses of interest. Return a list of crosses.'''
     assert generations > 0
     assert ngen_hyb_hyb <= generations
@@ -310,6 +310,7 @@ def generate_crosses(generations, log=sys.stdout, ngen_hyb_hyb=3):
                     crosses.append(cross)
                 # For all other crosses:
                 else:
+                    # TODO: These are going to break stuff down so I will remove them
                     # Only process secondary hybrid x hybrid
                     # crosses for a certain number of generations
                     # else it creates excessive combinations.
@@ -379,13 +380,13 @@ def make_vcf_header(crosses, ancestry_map, vcf):
     header_str = '\t'.join(header)
     vcf.write(f'{header_str}\n')
 
-def map_simulated_crosses(generations, n_individuals, outdir='.', log=sys.stdout, ngen_hyb_hyb=3):
+def map_simulated_crosses(generations, n_individuals, outdir='.', log=sys.stdout, ngen_hyb_hyb=0):
     '''Make a map of the new hybrid populations alongside the IDs for simulated
     individuals. Write to disk as a popmap.tsv file. Return a list with the
     crosses and map of the ancestry of each individual (id of each parent).'''
     print('\nCreating an assignment map for simulated individuals...', file=log, flush=True)
     fh = open(f'{outdir}/simulated_hybrids.popmap.tsv', 'w')
-    fh.write('#SampleID\tPopID\tGeneration\tCrossType\n')
+    fh.write('#SampleID\tPopID\tGeneration\tCrossType\tHybridIndex\tInterSpHet\n')
     population_map = dict()
     # Calculate the possible crosses
     crosses = generate_crosses(generations, log, ngen_hyb_hyb)
@@ -399,15 +400,24 @@ def map_simulated_crosses(generations, n_individuals, outdir='.', log=sys.stdout
         # First, define the population ID:
         pop_id = cross.pop
         population_map.setdefault(pop_id, [])
+        # Get some expected stats
+        hyb_gp = [1.0, 0.0, 0.0] # Expected proportions for P1
         # Make an ID for the cross type
         cross_type = None
         if not cross.hybrid:
-            cross_type = 'parental'
+            cross_type = 'Parental'
+            if cross.par1 == 'P2':
+                hyb_gp = [0.0, 0.0, 1.0] # Expected proportions for P2
         else:
             if cross.backcross:
-                cross_type = f'{cross.bc_dir}_backcross'
+                cross_type = f'{cross.bc_dir}_BC'
             else:
-                cross_type = 'hybrid'
+                cross_type = 'HybxHyb'
+            # Get some expected stats
+            hyb_gp = get_genomic_proportions(cross)
+        # Set some expected values for these two diagnostic stats
+        hybrid_index = hyb_gp[0]+(hyb_gp[1]/2)
+        intersp_het = hyb_gp[1]
         # Loop over the sampled individuals per pop
         for n in range(n_individuals):
             # The number of the individual in the population
@@ -418,7 +428,7 @@ def map_simulated_crosses(generations, n_individuals, outdir='.', log=sys.stdout
             # The sample ID combining population ID and sample number
             sample_id = f'{pop_id}_{pop_sam_i}_{tot_sam_i}'
             # Write to popmap
-            fh.write(f'{sample_id}\t{pop_id}\t{cross.gen}\t{cross_type}\n')
+            fh.write(f'{sample_id}\t{pop_id}\t{cross.gen}\t{cross_type}\t{hybrid_index:.06f}\t{intersp_het:.06f}\n')
             population_map[pop_id].append(sample_id)
     fh.close()
     # Now, map the specific ancestry of each individual
@@ -469,7 +479,7 @@ def sample_genotypes_from_allele_freqs(samples, cross, site_allele_freqs):
     else:
         # Determine the genomic proportion based on the cross
         # See Fitzpatrick 2012 BMC Evol Biol (https://doi.org/10.1186/1471-2148-12-131)
-        genomic_props = get_genomic_proportions(cross.gen)
+        genomic_props = get_genomic_proportions(cross)
         # Determine the genotype frequencies from the alleles freqs and genomic proportions
         gt_freqs = calculate_hybrid_gt_freqs(cross, site_allele_freqs, genomic_props)
         # Loop over the samples and get a gt
@@ -530,21 +540,75 @@ def calculate_hybrid_gt_freqs(cross, site_allele_freqs, genomic_props):
     # print(cross.gen, cross.pop, genomic_props, gt_freqs, p1_allele_freqs, p2_allele_freqs)
     return gt_freqs
 
-def get_genomic_proportions(generation):
+def get_genomic_proportions(cross):
     '''Get an expected genomic proportion based on the cross type.
     These are the genomic proportions defined by Turelli & Orr 2000
     and further detailed in Fitzpatrick 2012.'''
-    assert type(generation) is int
-    assert generation > 0
-    # Get the expected proportion of homozygotes
-    prop_hom_e = prop_homozygotes(generation)
-    # Break down into the three possible proportions
-    p11 = prop_hom_e/2 # Proportion with both alleles from P1
-    p12 = 1-prop_hom_e # Proportion with one allele from P1 and P2 each
-    p22 = prop_hom_e/2 # Proportion with both alleles from P2
+    assert isinstance(cross, Cross)
+    # Initialize these
+    p11, p12, p22 = None, None, None
+    # Fix the proportions for the parentals
+    # These shouldn't get here in the first place, but to be sure
+    if not cross.gen == 0 and not cross.hybrid:
+        # For P1s
+        if cross.par == 'P1':
+            p11 = 1.0
+            p12 = 0.0
+            p22 = 0.0
+        # For the P2s
+        else:
+            p11 = 0.0
+            p12 = 0.0
+            p22 = 1.0
+    # Process the hybrids
+    else:
+        # Process the backcrosses, skipping F1s
+        if cross.backcross and not cross.gen == 1:
+            # Get the homozygous proportion for the previous gen
+            prop_hom_e = prop_homozygotes(cross.gen-1)
+            # Break down into the three possible proportions
+            p11 = prop_hom_e/2 # Proportion with both alleles from P1
+            p12 = 1-prop_hom_e # Proportion with one allele from P1 and P2 each
+            p22 = prop_hom_e/2 # Proportion with both alleles from P2
+            # Adjust these based on the parental proportions
+            # Expected genotype proportions for P1
+            par_gp = [1.0, 0.0, 0.0]
+            exp_par_gp = expected_parental_proportion(cross.par1_g)
+            if cross.bc_dir == 'P2':
+                par_gp = [0.0, 0.0, 1.0]
+                exp_par_gp = 1 - exp_par_gp
+            # Adjust the proportions
+            p11 = (p11+par_gp[0])/2
+            p12 = (p12+par_gp[1])/2
+            p22 = (p22+par_gp[2])/2
+            # Check against the expected proportions
+            p1_prop = p11+(p12/2)
+            exp_intersp_het = 1 - prop_homozygotes(cross.gen)
+            assert math.isclose(p12, exp_intersp_het)
+            # TODO: This is of by one gen?
+            # TODO: @ARC everything past F2s is off in the backcrosses
+            # assert math.isclose(exp_par_gp, p1_prop), f"{exp_par_gp} {p1_prop} {p11} {p12} {p22} {cross}"
+        # The non-backcross hybrids
+        else:
+            # Get the expected proportion of homozygotes
+            prop_hom_e = prop_homozygotes(cross.gen)
+            # print(f'{cross} {prop_hom_e}')
+            # Break down into the three possible proportions
+            p11 = prop_hom_e/2 # Proportion with both alleles from P1
+            p12 = 1-prop_hom_e # Proportion with one allele from P1 and P2 each
+            p22 = prop_hom_e/2 # Proportion with both alleles from P2
+    # TODO: Adjust for other hybrid crosses
     exp_gp = [p11, p12, p22]
     assert math.isclose(sum(exp_gp),1)
     return exp_gp
+
+def expected_parental_proportion(backcross_generation):
+    '''The expected proportion of genome originating from the recurrent parent in backcross generations'''
+    assert type(backcross_generation) is int
+    assert backcross_generation >= 0
+    t = backcross_generation-1
+    Et = 1-((1/2)**(t+1))
+    return Et
 
 def prop_homozygotes(generation, n_loci=1):
     '''Determine the expected proportion of intra-class homozygotes in hybrid crosses'''
