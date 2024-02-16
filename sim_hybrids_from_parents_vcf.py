@@ -75,6 +75,11 @@ class Cross():
         self.pop       = f'F{self.gen}'
         self.backcross = False # Backcross or not
         self.bc_dir    = None # Direction of backcross
+        # Set the genomic proportions
+        # See Fitzpatrick 2012 BMC Evol Biol (https://doi.org/10.1186/1471-2148-12-131)
+        self.prop_p11 = None # Proportion homozygous for parent 1
+        self.prop_p12 = None # Proportion heterozygous for par1 and par2
+        self.prop_p22 = None # Proportion homozygous for parent 2
         # Not a hybrid if the cross is between parentals
         if (self.par1 in {'P1','P2'}) and (self.par1 == self.par2):
             self.hybrid = False
@@ -120,6 +125,14 @@ class Cross():
                 self.pop = f'F{self.gen}-H{self.par1_g}.{self.par2_g}'
     def __str__(self):
         return f'{self.pop} {self.par1}x{self.par2} {self.hybrid} {self.backcross} {self.bc_dir} {self.par1_g}x{self.par2_g}'
+    def check_genomic_props(self):
+        gp = [self.prop_p11, self.prop_p12, self.prop_p22]
+        if None in gp:
+            return False
+        elif not math.isclose(sum(gp), 1.0):
+            return False
+        else:
+            return True
 
 class SampleAncestry:
     def __init__(self, sample_id, sample_pop, parent1, parent2, generation):
@@ -415,9 +428,14 @@ def map_simulated_crosses(generations, n_individuals, outdir='.', log=sys.stdout
                 cross_type = 'HybxHyb'
             # Get some expected stats
             hyb_gp = get_genomic_proportions(cross)
+        # Set the hybrid proportions back in the Cross class
+        cross.prop_p11 = hyb_gp[0]
+        cross.prop_p12 = hyb_gp[1]
+        cross.prop_p22 = hyb_gp[2]
+        assert cross.check_genomic_props(), f'Error in genomic proportions {cross}: {cross.prop_p11} {cross.prop_p12} {cross.prop_p22}'
         # Set some expected values for these two diagnostic stats
-        hybrid_index = hyb_gp[0]+(hyb_gp[1]/2)
-        intersp_het = hyb_gp[1]
+        hybrid_index = cross.prop_p11+(cross.prop_p12/2)
+        intersp_het = cross.prop_p12
         # Loop over the sampled individuals per pop
         for n in range(n_individuals):
             # The number of the individual in the population
@@ -477,11 +495,8 @@ def sample_genotypes_from_allele_freqs(samples, cross, site_allele_freqs):
             pop_genotypes[sam.id] = [al_p1, al_p2]
     # Process all crosses containing the hybrids
     else:
-        # Determine the genomic proportion based on the cross
-        # See Fitzpatrick 2012 BMC Evol Biol (https://doi.org/10.1186/1471-2148-12-131)
-        genomic_props = get_genomic_proportions(cross)
         # Determine the genotype frequencies from the alleles freqs and genomic proportions
-        gt_freqs = calculate_hybrid_gt_freqs(cross, site_allele_freqs, genomic_props)
+        gt_freqs = calculate_hybrid_gt_freqs(cross, site_allele_freqs)
         # Loop over the samples and get a gt
         for sam in samples:
             assert isinstance(sam, SampleAncestry)
@@ -497,16 +512,16 @@ def sample_gt(gt_freqs):
     gt = random.choices(genotypes, weights=gt_freqs, k=1)[0]
     return gt
 
-def calculate_hybrid_gt_freqs(cross, site_allele_freqs, genomic_props):
+def calculate_hybrid_gt_freqs(cross, site_allele_freqs):
     '''Calculate the genotype frequency in a hybrid propulation from the
     observed allele frequency and genomic proportions. See Fitzpatrick 2012
     BMC Evol Biol (https://doi.org/10.1186/1471-2148-12-131).'''
     assert isinstance(cross, Cross)
-    assert len(genomic_props) == 3
     # Genomic proportions
-    p11 = genomic_props[0]
-    p12 = genomic_props[1]
-    p22 = genomic_props[2]
+    assert cross.check_genomic_props(), f'Error in genomic proportions {cross}: {p11} {p12} {p22}'
+    p11 = cross.prop_p11
+    p12 = cross.prop_p12
+    p22 = cross.prop_p22
     # Allele freqs for P1
     # p1_allele_freqs = site_allele_freqs.get(cross.par1, None)
     p1_allele_freqs = site_allele_freqs.get('P1', None)
@@ -552,14 +567,10 @@ def get_genomic_proportions(cross):
     if not cross.gen == 0 and not cross.hybrid:
         # For P1s
         if cross.par == 'P1':
-            p11 = 1.0
-            p12 = 0.0
-            p22 = 0.0
+            p11, p12, p22 = 1.0, 0.0, 0.0
         # For the P2s
         else:
-            p11 = 0.0
-            p12 = 0.0
-            p22 = 1.0
+            p11, p12, p22 = 0.0, 0.0, 1.0
     # Process the hybrids
     else:
         # Process the backcrosses, skipping F1s
@@ -571,11 +582,10 @@ def get_genomic_proportions(cross):
             p12 = 1-prop_hom_e # Proportion with one allele from P1 and P2 each
             p22 = prop_hom_e/2 # Proportion with both alleles from P2
             # Adjust these based on the parental proportions
-            # Expected genotype proportions for P1
-            par_gp = [1.0, 0.0, 0.0]
+            par_gp = [1.0, 0.0, 0.0] # Expected genotype proportions for P1
             exp_par_gp = expected_parental_proportion(cross.par1_g)
             if cross.bc_dir == 'P2':
-                par_gp = [0.0, 0.0, 1.0]
+                par_gp = [0.0, 0.0, 1.0] # Expected genotype proportions for P2
                 exp_par_gp = 1 - exp_par_gp
             # Adjust the proportions
             p11 = (p11+par_gp[0])/2
@@ -586,7 +596,7 @@ def get_genomic_proportions(cross):
             exp_intersp_het = 1 - prop_homozygotes(cross.gen)
             assert math.isclose(p12, exp_intersp_het)
             # TODO: This is of by one gen?
-            # TODO: @ARC everything past F2s is off in the backcrosses
+            # TODO: @ARC everything past F2s is off in the backcrosses. Their HI is ALWAYS 0.75/0.25
             # assert math.isclose(exp_par_gp, p1_prop), f"{exp_par_gp} {p1_prop} {p11} {p12} {p22} {cross}"
         # The non-backcross hybrids
         else:
