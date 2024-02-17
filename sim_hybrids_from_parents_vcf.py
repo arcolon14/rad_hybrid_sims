@@ -575,38 +575,40 @@ def get_genomic_proportions(cross):
     else:
         # Process the backcrosses, skipping F1s
         if cross.backcross and not cross.gen == 1:
-            # Get the homozygous proportion for the previous gen
-            prop_hom_e = prop_homozygotes(cross.gen-1)
-            # Break down into the three possible proportions
-            p11 = prop_hom_e/2 # Proportion with both alleles from P1
-            p12 = 1-prop_hom_e # Proportion with one allele from P1 and P2 each
-            p22 = prop_hom_e/2 # Proportion with both alleles from P2
-            # Adjust these based on the parental proportions
-            par_gp = [1.0, 0.0, 0.0] # Expected genotype proportions for P1
-            exp_par_gp = expected_parental_proportion(cross.par1_g)
-            if cross.bc_dir == 'P2':
-                par_gp = [0.0, 0.0, 1.0] # Expected genotype proportions for P2
-                exp_par_gp = 1 - exp_par_gp
-            # Adjust the proportions
-            p11 = (p11+par_gp[0])/2
-            p12 = (p12+par_gp[1])/2
-            p22 = (p22+par_gp[2])/2
-            # Check against the expected proportions
-            p1_prop = p11+(p12/2)
-            exp_intersp_het = 1 - prop_homozygotes(cross.gen)
-            assert math.isclose(p12, exp_intersp_het)
-            # TODO: This is of by one gen?
-            # TODO: @ARC everything past F2s is off in the backcrosses. Their HI is ALWAYS 0.75/0.25
-            # assert math.isclose(exp_par_gp, p1_prop), f"{exp_par_gp} {p1_prop} {p11} {p12} {p22} {cross}"
-        # The non-backcross hybrids
-        else:
             # Get the expected proportion of homozygotes
             prop_hom_e = prop_homozygotes(cross.gen)
-            # print(f'{cross} {prop_hom_e}')
+            exp_par_gp = expected_parental_proportion(cross.gen)
+            # Get the expected interspecies hets
+            exp_intersp_het = 1 - prop_hom_e
+            # Assign the proportions
+            p11 = prop_hom_e      # Proportion with both alleles from P1
+            p12 = exp_intersp_het # Proportion with one allele from P1 and P2 each
+            p22 = 0.0             # Proportion with both alleles from P2
+            # Adjust for the P2 backcrosses
+            if cross.bc_dir == 'P2':
+                p11 = 0.0
+                p22 = prop_hom_e
+                exp_par_gp = 1 - exp_par_gp
+            # Get the parental proportions
+            p1_prop = p11+(p12/2)
+            # print(cross, f'| {p11} {p12} {p22} | {exp_par_gp} = {p1_prop} | {exp_intersp_het} = {p12}')
+            assert math.isclose(p12, exp_intersp_het)
+            assert math.isclose(exp_par_gp, p1_prop), f"{exp_par_gp} {p1_prop}"
+        # The non-backcross hybrids
+        else:
+            # Confirm that the parents are from the same generation
+            assert cross.par1_g == cross.par2_g
+            # Get the expected proportion of homozygotes
+            prop_hom_e = prop_homozygotes(cross.gen)
+            exp_intersp_het = 1 - prop_homozygotes(cross.gen)
+            exp_par_gp = prop_hom_e/2 + exp_intersp_het/2
             # Break down into the three possible proportions
             p11 = prop_hom_e/2 # Proportion with both alleles from P1
             p12 = 1-prop_hom_e # Proportion with one allele from P1 and P2 each
             p22 = prop_hom_e/2 # Proportion with both alleles from P2
+            p1_prop = p1_prop = p11+(p12/2)
+            # print(cross, f'| {p11} {p12} {p22} | {exp_par_gp} = {p1_prop} | {exp_intersp_het} = {p12}')
+            assert math.isclose(p12, exp_intersp_het)
     # TODO: Adjust for other hybrid crosses
     exp_gp = [p11, p12, p22]
     assert math.isclose(sum(exp_gp),1)
