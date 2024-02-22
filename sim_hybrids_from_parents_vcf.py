@@ -22,6 +22,8 @@ def parse_args():
                    help='(int) Number of individuals simulated per population. [default=10]')
     p.add_argument('-m', '--min-maf', required=False, default=0.05, type=float,
                    help='(float) Minimum allele frequency to retain a parental allele [default=0.05]')
+    p.add_argument('-r', '--prop-missing', required=False, type=float, default=0.0,
+                   help='(float) Proportion of missing genotypes in the simulated samples.  [default=0.0]')
     p.add_argument('--fixed-gt-pool', required=False, action='store_false', default=True,
                    help='Simulate from a fixed pool of genotypes (instead of simulating from the allele frequencies)')
     # Check input arguments
@@ -39,6 +41,11 @@ def parse_args():
         sys.exit(f"Error: number of individuals ({args.n_individuals}) must be greater than 0.")
     if not 0.0 <= args.min_maf <= 0.5:
         sys.exit(f"Error: Min minor allele frequency ({args.min_maf}) must be between 0.0 - 0.5.")
+    if not 0.0 <= args.prop_missing <= 1.0:
+        sys.exit(f"Error: Proportion missing data ({args.prop_missing}) must be between 0.0 - 1.0.")
+    # Set the missing to None if == 0
+    if args.prop_missing == 0.0:
+        args.prop_missing = None
     return args
 
 #
@@ -162,7 +169,8 @@ Input parameters:
     Outdir:        {args.outdir}
     Generations:   {args.generations}
     N individuals: {args.n_individuals}
-    Min MAF:       {args.min_maf:0.06g}''',
+    Min MAF:       {args.min_maf:0.06g}
+    Prop Missing:  {args.prop_missing:0.06g}''',
     file=log, flush=True)
 
 def parse_popmap(popmap_f, log=sys.stdout):
@@ -654,10 +662,11 @@ def sample_hybrid_genotypes(samples, cross, site_genotypes):
         pop_genotypes[sam.id] = genotype
     return pop_genotypes
 
-def format_vcf_row(site_info, site_genotypes, crosses, vcf):
+def format_vcf_row(site_info, site_genotypes, crosses, vcf, prop_missing=None):
     '''Aggregate the coordinate and allele information for each site, as well as the individual
     genotypes and format into the text of a VCF row. Save this now row text into the VCF fh.'''
     assert isinstance(site_info, SnpInfo)
+    assert prop_missing is None or type(prop_missing) is float
     # Prepare the row
     row = [site_info.chr,  # CHROM
            site_info.bp,   # POS
@@ -669,23 +678,31 @@ def format_vcf_row(site_info, site_genotypes, crosses, vcf):
            'info',         # INFO (will be updated)
            'GT']           # FORMAT (we only have genotypes)
     # Two variables for the INFO field:
-    info_ns  = 0  # Number of seen samples for INFO (should be all)
-    info_af  = 0  # Allele frequency for 
+    info_ns  = 0  # Number of seen samples for INFO
+    info_af  = 0  # Allele frequency for INFO
     tot_alls = 0  # Count of the total alleles seen
     for cross in sorted(crosses, key=lambda c: c.gen):
         indv_genotypes = site_genotypes[cross.pop]
         for sample in indv_genotypes:
-            # Increase sample tally
-            info_ns += 1
-            genotype = sorted(indv_genotypes[sample])
-            # Increase the allele tally
-            for al in genotype:
-                tot_alls += 1
-                if al == 1:
-                    info_af += 1
-            # Formatted genotype STR
-            geno_str = f'{genotype[0]}/{genotype[1]}'
-            row.append(geno_str)
+            # Process missing data
+            missing = False
+            if prop_missing is not None:
+                # Sample missing probability based on the proportion missing
+                missing = random.choices([True, False], weights=[prop_missing, (1-prop_missing)], k=1)[0]
+            if missing:
+                row.append('./.')
+            else:
+                # Increase sample tally
+                info_ns += 1
+                genotype = sorted(indv_genotypes[sample])
+                # Increase the allele tally
+                for al in genotype:
+                    tot_alls += 1
+                    if al == 1:
+                        info_af += 1
+                # Formatted genotype STR
+                geno_str = f'{genotype[0]}/{genotype[1]}'
+                row.append(geno_str)
     # Add the formatted INFO tab
     info_af = info_af/tot_alls
     info = f'NS={info_ns};AF={info_af:0.04g}'
@@ -694,7 +711,7 @@ def format_vcf_row(site_info, site_genotypes, crosses, vcf):
     row_str = '\t'.join(row)
     vcf.write(f'{row_str}\n')
 
-def simulate_genotypes(ancestry_map, crosses, parental_allele_freqs, var_site_info, vcf, log=sys.stdout):
+def simulate_genotypes(ancestry_map, crosses, parental_allele_freqs, var_site_info, vcf, prop_missing=None, log=sys.stdout):
     '''Simulate the genotypes for all the possible crosses using discrete parental
     genotyoes. Store the resulting data in the output VCF.'''
     print('\nSimulating genotypes from a pool of fixed genotypes...', file=log, flush=True)
@@ -723,7 +740,7 @@ def simulate_genotypes(ancestry_map, crosses, parental_allele_freqs, var_site_in
                 # Process all the other crossses, based on the fixed, existing genotypes
                 pop_genotypes = sample_hybrid_genotypes(pop_samples, cross, site_genotypes)
                 site_genotypes[cross.pop] = pop_genotypes
-        format_vcf_row(info, site_genotypes, crosses, vcf)
+        format_vcf_row(info, site_genotypes, crosses, vcf, prop_missing)
     # Report and Return
     print(f'    Simulated genotypes for {n_sites:,} variant sites.',
           file=log, flush=True)
@@ -743,7 +760,7 @@ def find_pop_allele_freq(cross, site_freqs):
     return [p_f1, q_f1]
 
 
-def simulate_genotypes_from_prob(ancestry_map, crosses, parental_allele_freqs, var_site_info, vcf, log=sys.stdout):
+def simulate_genotypes_from_prob(ancestry_map, crosses, parental_allele_freqs, var_site_info, vcf, prop_missing=0.0, log=sys.stdout):
     '''Simulate the genotypes for all the possible crosses, using the probaility
     (allele frequency) model. Store the resulting data in the output VCF.'''
     print('\nSimulating genotypes...', file=log, flush=True)
@@ -779,7 +796,7 @@ def simulate_genotypes_from_prob(ancestry_map, crosses, parental_allele_freqs, v
                 # Sample genotypes based on the calculatated allele frequencies of the previous generation
                 pop_genotypes = sample_genotypes_from_allele_freqs(pop_samples, cross, site_freqs)
                 site_genotypes[cross.pop] = pop_genotypes
-        format_vcf_row(info, site_genotypes, crosses, vcf)
+        format_vcf_row(info, site_genotypes, crosses, vcf, prop_missing)
     # Report and Return
     print(f'    Simulated genotypes for {n_sites:,} variant sites.',
           file=log, flush=True)
@@ -827,10 +844,10 @@ def main():
     # Simulate the genotypes and save this to a the VCF
     if args.fixed_gt_pool:
         # This function uses a new method that samples genotypes from the allele frequencies
-        simulate_genotypes_from_prob(ancestry_map, crosses_map, parental_allele_freqs, snp_info, out_vcf, log_f)
+        simulate_genotypes_from_prob(ancestry_map, crosses_map, parental_allele_freqs, snp_info, out_vcf, args.prop_missing, log_f)
     else:
         # Previous method that sample genotypes from the already existing genotypes in the previous generation
-        simulate_genotypes(ancestry_map, crosses_map, parental_allele_freqs, snp_info, out_vcf, log_f) 
+        simulate_genotypes(ancestry_map, crosses_map, parental_allele_freqs, snp_info, out_vcf, args.prop_missing, log_f) 
 
     # Close outputs
     log_f.write(f'\n{PROG} finished on {now()}\n')
