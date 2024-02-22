@@ -42,7 +42,7 @@ options:
 
 ```sh
 usage: sim_hybrids_from_parents_vcf.py [-h] -p POPMAP -v VCF [-o OUTDIR] [-g GENERATIONS]
-                                       [-n N_INDIVIDUALS] [-m MIN_MAF] [--fixed-gt-pool]
+       [-n N_INDIVIDUALS] [-m MIN_MAF] [-r PROP_MISSING] [--fixed-gt-pool]
 
 Simulate sequential hybrid populations (e.g., F1s, F2 backcrosses, etc.) from a pool of
 parental alleles from two populations/species.
@@ -57,12 +57,16 @@ options:
   -g GENERATIONS, --generations GENERATIONS
                         (int) Number of hybrid generations to simulate. [default=10]
   -n N_INDIVIDUALS, --n-individuals N_INDIVIDUALS
-                        (int) Number of individuals simulated per population. [default=10]
+                        (int) Number of individuals simulated per population.
+                        [default=10]
   -m MIN_MAF, --min-maf MIN_MAF
-                        (float) Minimum allele frequency to retain a parental allele
-                        [default=0.05]
-  --fixed-gt-pool       Simulate from a fixed pool of genotypes (instead of simulating from
-                        the allele frequencies)
+                        (float) Minimum allele frequency to retain a parental
+                        allele. [default=0.05]
+  -r PROP_MISSING, --prop-missing PROP_MISSING
+                        (float) Proportion of missing genotypes in the simulated samples.
+                        [default=0.0]
+  --fixed-gt-pool       Simulate from a fixed pool of genotypes (instead of simulating
+                        from the allele frequencies)
 ```
 
 ## Author
