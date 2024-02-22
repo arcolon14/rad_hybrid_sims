@@ -162,6 +162,9 @@ def time():
 
 def initialize_log(args, log=sys.stdout):
     '''Initialize the log file'''
+    pm = args.prop_missing
+    if pm is None:
+        pm = 0.0
     print(f'''{PROG} started on {now()}\n
 Input parameters:
     Popmap:        {args.popmap}
@@ -170,7 +173,7 @@ Input parameters:
     Generations:   {args.generations}
     N individuals: {args.n_individuals}
     Min MAF:       {args.min_maf:0.06g}
-    Prop Missing:  {args.prop_missing:0.06g}''',
+    Prop Missing:  {pm:0.06g}''',
     file=log, flush=True)
 
 def parse_popmap(popmap_f, log=sys.stdout):
